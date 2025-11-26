@@ -25,7 +25,13 @@ jobs:
     - name: Install build dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install build twine
+        pip install build twine setuptools-scm[toml]>=6.2
+
+    - name: Verify package structure
+      run: |
+        # Ensure package directory exists
+        mkdir -p openstack_lb_treeview
+        ls -la openstack_lb_treeview/
 
     - name: Build package
       run: |
