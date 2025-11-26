@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openstack-lb-treeview"
+dynamic = ["version"]  # Version is automatically derived from git tags via setuptools-scm
+description = "Display a tree view of OpenStack loadbalancers, pools, and members"
+readme = "README.md"
+requires-python = ">=3.6"
+license = "MIT"
+authors = [
+    {name = "Samuel Alfageme Sainz", email = "samuel@alfage.me"},
+]
+keywords = ["openstack", "loadbalancer", "octavia", "treeview"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: System :: Systems Administration",
+]
+
+dependencies = [
+    "openstacksdk>=1.0.0",
+]
+
+[project.scripts]
+openstack-lb-treeview = "openstack_lb_treeview.lb_treeview:main"
+
+[project.urls]
+Homepage = "https://github.com/SamuAlfageme/openstack-lb-treeview"
+Repository = "https://github.com/SamuAlfageme/openstack-lb-treeview"
+Issues = "https://github.com/SamuAlfageme/openstack-lb-treeview/issues"
+
+[tool.setuptools_scm]
+# Automatically derive version from git tags
+# Tag format: v0.1.0, v1.2.3, etc.
+write_to = "openstack_lb_treeview/_version.py"
+version_scheme = "release-branch-semver"
+local_scheme = "no-local-version"
