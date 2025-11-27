@@ -1,5 +1,9 @@
 # OpenStack Load Balancer Tree View
 
+[![PyPI version](https://img.shields.io/pypi/v/openstack-lb-treeview)](https://pypi.org/project/openstack-lb-treeview/)
+![License](https://img.shields.io/pypi/l/openstack-lb-treeview)
+![Python versions](https://img.shields.io/pypi/pyversions/openstack-lb-treeview)
+
 A Python script that displays a tree view of all loadbalancers in an OpenStack project, showing pools and members in a hierarchical structure.
 
 ## Features
