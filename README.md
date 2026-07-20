@@ -13,6 +13,7 @@ A Python script that displays a tree view of all loadbalancers in an OpenStack p
 - Shows members as children of pools
 - Highlights members with `provisioning_status != ACTIVE` (yellow/bold)
 - Displays members with `operating_status != ONLINE` in red
+- **Single LB**: Show the tree for one load balancer by name or ID (`--lb`)
 - **Filter mode**: Show only problematic members (not ACTIVE/ONLINE) and pools with no members
 - **Collapse mode**: Show only pool names without querying/displaying members (faster execution)
 
@@ -57,9 +58,16 @@ Filter by project ID:
 openstack-lb-treeview --project-id <project-id>
 ```
 
+Single load balancer by name or ID:
+```bash
+openstack-lb-treeview --lb my-loadbalancer
+openstack-lb-treeview --lb abc123-def456-...
+```
+
 Filter mode (only show problematic members and empty pools):
 ```bash
 openstack-lb-treeview --filter
+openstack-lb-treeview --lb my-loadbalancer --filter
 ```
 
 Collapse mode (only show pool names, skip member queries):

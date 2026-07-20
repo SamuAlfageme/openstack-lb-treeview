@@ -75,7 +75,76 @@ def format_member_status(member):
     return f"{name} ({status_str})"
 
 
-def print_tree(conn, project_id=None, filter_mode=False, collapse_mode=False):
+def resolve_loadbalancers(conn, project_id=None, lb_name_or_id=None):
+    """Resolve load balancers to display.
+
+    Args:
+        conn: OpenStack connection object
+        project_id: Optional project ID to filter by
+        lb_name_or_id: Optional load balancer name or ID to show a single LB
+
+    Returns:
+        List of load balancer objects
+    """
+    if lb_name_or_id:
+        kwargs = {}
+        if project_id:
+            kwargs['project_id'] = project_id
+
+        # Try direct ID fetch first (fast path for UUIDs)
+        try:
+            lb = conn.load_balancer.get_load_balancer(lb_name_or_id)
+            if lb:
+                return [lb]
+        except (OpenStackCloudException, Exception):
+            pass
+
+        # Fall back to name / name_or_id search via the SDK finder
+        try:
+            lb = conn.load_balancer.find_load_balancer(
+                lb_name_or_id, ignore_missing=True, **kwargs
+            )
+            if lb:
+                return [lb]
+        except (OpenStackCloudException, Exception):
+            pass
+
+        # Last resort: list and match by name (handles ambiguous/duplicate names)
+        list_kwargs = dict(kwargs)
+        list_kwargs['name'] = lb_name_or_id
+        matches = list(conn.load_balancer.load_balancers(**list_kwargs))
+        if len(matches) == 1:
+            return matches
+        if len(matches) > 1:
+            print(
+                f"{Colors.RED}Error: Multiple load balancers named "
+                f"'{lb_name_or_id}'. Use --lb <id> instead.{Colors.RESET}"
+            )
+            for match in matches:
+                if hasattr(match, 'id'):
+                    match_id = match.id
+                    match_project = getattr(match, 'project_id', '?')
+                else:
+                    match_id = match.get('id', '?')
+                    match_project = match.get('project_id', '?')
+                print(f"  - ID: {match_id} (project: {match_project})")
+            first = matches[0]
+            first_id = first.id if hasattr(first, 'id') else first.get('id', '<id>')
+            print(f"Example: openstack-lb-treeview --lb {first_id}")
+            sys.exit(1)
+
+        print(
+            f"{Colors.RED}Error: Load balancer '{lb_name_or_id}' not found.{Colors.RESET}"
+        )
+        print("Example: openstack-lb-treeview --lb <load-balancer-id-or-name>")
+        sys.exit(1)
+
+    if project_id:
+        return list(conn.load_balancer.load_balancers(project_id=project_id))
+    return list(conn.load_balancer.load_balancers())
+
+
+def print_tree(conn, project_id=None, filter_mode=False, collapse_mode=False, lb_name_or_id=None):
     """Print tree view of loadbalancers, pools, and members
 
     Args:
@@ -83,14 +152,12 @@ def print_tree(conn, project_id=None, filter_mode=False, collapse_mode=False):
         project_id: Optional project ID to filter by
         filter_mode: If True, only show problematic members and pools with no members
         collapse_mode: If True, only show pool names without querying/displaying members
+        lb_name_or_id: Optional load balancer name or ID to show a single LB
     """
     try:
-        # Get all loadbalancers
-        # Convert generator to list to allow multiple iterations if needed
-        if project_id:
-            loadbalancers = list(conn.load_balancer.load_balancers(project_id=project_id))
-        else:
-            loadbalancers = list(conn.load_balancer.load_balancers())
+        loadbalancers = resolve_loadbalancers(
+            conn, project_id=project_id, lb_name_or_id=lb_name_or_id
+        )
 
         if not loadbalancers:
             print("No loadbalancers found in the project.")
@@ -296,7 +363,25 @@ def print_tree(conn, project_id=None, filter_mode=False, collapse_mode=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Display a tree view of OpenStack loadbalancers, pools, and members'
+        description='Display a tree view of OpenStack loadbalancers, pools, and members',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  openstack-lb-treeview
+  openstack-lb-treeview --lb my-loadbalancer
+  openstack-lb-treeview --lb abc123-def456-...
+  openstack-lb-treeview --lb my-loadbalancer --filter
+  openstack-lb-treeview --lb my-loadbalancer --collapse
+  openstack-lb-treeview --project-id <project-id>
+  openstack-lb-treeview --cloud mycloud --filter --collapse
+"""
+    )
+    parser.add_argument(
+        '--lb',
+        '--loadbalancer',
+        dest='lb',
+        metavar='NAME_OR_ID',
+        help='Show tree view for a single load balancer (by name or ID)',
+        default=None
     )
     parser.add_argument(
         '--project-id',
@@ -332,7 +417,13 @@ def main():
         sys.exit(1)
 
     # Print tree view
-    print_tree(conn, project_id=args.project_id, filter_mode=args.filter, collapse_mode=args.collapse)
+    print_tree(
+        conn,
+        project_id=args.project_id,
+        filter_mode=args.filter,
+        collapse_mode=args.collapse,
+        lb_name_or_id=args.lb,
+    )
 
 
 if __name__ == '__main__':
