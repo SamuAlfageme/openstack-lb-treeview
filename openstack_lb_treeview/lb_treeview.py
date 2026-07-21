@@ -14,6 +14,7 @@ Highlights:
 
 import sys
 import argparse
+from collections import Counter
 from openstack import connection
 from openstack.exceptions import OpenStackCloudException
 
@@ -29,6 +30,17 @@ class Colors:
     UNDERLINE = '\033[4m'
 
 
+# Preferred display order for member operating_status summary
+OPERATING_STATUS_ORDER = (
+    'ERROR',
+    'DEGRADED',
+    'OFFLINE',
+    'DRAINING',
+    'NO_MONITOR',
+    'ONLINE',
+)
+
+
 def get_connection():
     """Create OpenStack connection using environment variables or clouds.yaml"""
     try:
@@ -41,6 +53,27 @@ def get_connection():
         sys.exit(1)
 
 
+def resource_attr(obj, key, default='UNKNOWN'):
+    """Read an attribute from an SDK object or dict."""
+    if hasattr(obj, key) and not isinstance(obj, dict):
+        value = getattr(obj, key, None)
+    else:
+        value = obj.get(key) if isinstance(obj, dict) else None
+    return value if value is not None else default
+
+
+def member_to_dict(member):
+    """Normalize a member SDK object or dict to a plain dict."""
+    if hasattr(member, 'name') and not isinstance(member, dict):
+        return {
+            'id': member.id,
+            'name': member.name,
+            'provisioning_status': getattr(member, 'provisioning_status', 'UNKNOWN'),
+            'operating_status': getattr(member, 'operating_status', 'UNKNOWN'),
+        }
+    return member
+
+
 def is_member_problematic(member):
     """Check if a member has issues (not ACTIVE or not ONLINE)"""
     prov_status = member.get('provisioning_status', 'UNKNOWN')
@@ -48,31 +81,82 @@ def is_member_problematic(member):
     return prov_status != 'ACTIVE' or oper_status != 'ONLINE'
 
 
+def format_status_pair(prov_status, oper_status):
+    """Format provisioning/operating status with highlighting."""
+    if prov_status != 'ACTIVE':
+        prov_display = f"{Colors.YELLOW}{Colors.BOLD}{prov_status}{Colors.RESET}"
+    else:
+        prov_display = prov_status
+
+    if oper_status != 'ONLINE':
+        oper_display = f"{Colors.RED}{oper_status}{Colors.RESET}"
+    else:
+        oper_display = oper_status
+
+    return f"provisioning: {prov_display} | operating: {oper_display}"
+
+
 def format_member_status(member):
     """Format member with appropriate highlighting based on status"""
     name = member.get('name', member.get('id', 'N/A'))
     prov_status = member.get('provisioning_status', 'UNKNOWN')
     oper_status = member.get('operating_status', 'UNKNOWN')
+    return f"{name} ({format_status_pair(prov_status, oper_status)})"
 
-    # Build status string
-    status_parts = []
 
-    # Highlight provisioning_status if not ACTIVE
-    if prov_status != 'ACTIVE':
-        prov_display = f"{Colors.YELLOW}{Colors.BOLD}{prov_status}{Colors.RESET}"
-        status_parts.append(f"provisioning: {prov_display}")
-    else:
-        status_parts.append(f"provisioning: {prov_status}")
+def colorize_operating_status(status):
+    """Color an operating_status label for the member summary."""
+    if status == 'ONLINE':
+        return status
+    if status in ('ERROR', 'DEGRADED', 'OFFLINE'):
+        return f"{Colors.RED}{status}{Colors.RESET}"
+    if status in ('DRAINING', 'NO_MONITOR', 'UNKNOWN'):
+        return f"{Colors.YELLOW}{status}{Colors.RESET}"
+    return f"{Colors.YELLOW}{status}{Colors.RESET}"
 
-    # Display operating_status in red if not ONLINE
-    if oper_status != 'ONLINE':
-        oper_display = f"{Colors.RED}{oper_status}{Colors.RESET}"
-        status_parts.append(f"operating: {oper_display}")
-    else:
-        status_parts.append(f"operating: {oper_status}")
 
-    status_str = " | ".join(status_parts)
-    return f"{name} ({status_str})"
+def format_member_summary(members):
+    """Build a compact operating_status breakdown for pool members.
+
+    Example: 13 ERROR - 3 DEGRADED - 4 OFFLINE - 3 ONLINE - 23 TOTAL
+    """
+    counts = Counter(
+        m.get('operating_status', 'UNKNOWN') or 'UNKNOWN' for m in members
+    )
+    total = sum(counts.values())
+    parts = []
+
+    for status in OPERATING_STATUS_ORDER:
+        count = counts.pop(status, 0)
+        if count:
+            parts.append(f"{count} {colorize_operating_status(status)}")
+
+    for status in sorted(counts):
+        parts.append(f"{counts[status]} {colorize_operating_status(status)}")
+
+    parts.append(f"{Colors.BOLD}{total} TOTAL{Colors.RESET}")
+    return " - ".join(parts)
+
+
+def format_lb_line(lb_name, lb_id, prov_status, oper_status):
+    """Format the load balancer header line."""
+    status = format_status_pair(prov_status, oper_status)
+    return (
+        f"{Colors.BOLD}{Colors.BLUE}📦 {lb_name}{Colors.RESET} "
+        f"(ID: {lb_id}) ({status})"
+    )
+
+
+def format_pool_line(prefix, pool_name, pool_id, prov_status, oper_status, members=None):
+    """Format a pool line with status and optional member summary."""
+    status = format_status_pair(prov_status, oper_status)
+    line = (
+        f"{prefix} {Colors.GREEN}🏊 {pool_name}{Colors.RESET} "
+        f"(ID: {pool_id}) ({status})"
+    )
+    if members is not None:
+        line += f" | {format_member_summary(members)}"
+    return line
 
 
 def resolve_loadbalancers(conn, project_id=None, lb_name_or_id=None):
@@ -151,7 +235,7 @@ def print_tree(conn, project_id=None, filter_mode=False, collapse_mode=False, lb
         conn: OpenStack connection object
         project_id: Optional project ID to filter by
         filter_mode: If True, only show problematic members and pools with no members
-        collapse_mode: If True, only show pool names without querying/displaying members
+        collapse_mode: If True, show pools (with member status summary) but not individual members
         lb_name_or_id: Optional load balancer name or ID to show a single LB
     """
     try:
@@ -164,195 +248,115 @@ def print_tree(conn, project_id=None, filter_mode=False, collapse_mode=False, lb
             return
 
         for lb in loadbalancers:
-            # Handle both dict and object responses
-            if hasattr(lb, 'name'):
-                lb_name = lb.name or lb.id
-                lb_id = lb.id
-                lb_operating_status = getattr(lb, 'operating_status', None)
-            else:
-                lb_name = lb.get('name', lb.get('id', 'Unknown'))
-                lb_id = lb.get('id')
-                lb_operating_status = lb.get('operating_status')
+            lb_name = resource_attr(lb, 'name', None) or resource_attr(lb, 'id')
+            lb_id = resource_attr(lb, 'id')
+            lb_prov_status = resource_attr(lb, 'provisioning_status')
+            lb_oper_status = resource_attr(lb, 'operating_status')
 
             # When both filter and collapse are enabled, filter by load balancer operating_status
             if filter_mode and collapse_mode:
                 # Only show load balancers with operating_status != 'ONLINE'
-                if lb_operating_status == 'ONLINE':
+                if lb_oper_status == 'ONLINE':
                     continue
 
             # Get pools for this loadbalancer
             try:
-                # Try different API patterns for getting pools
                 pools = list(conn.load_balancer.pools(loadbalancer_id=lb_id))
 
-                if collapse_mode:
-                    # In collapse mode, just show pool names without members
-                    pools = [(pool, None) for pool in pools]
-                elif filter_mode:
-                    # In filter mode, collect pools that should be shown
-                    filtered_pools = []
-                    for pool in pools:
-                        # Handle both dict and object responses
-                        if hasattr(pool, 'name'):
-                            pool_id = pool.id
-                        else:
-                            pool_id = pool.get('id')
+                # Build (pool, all_members, display_members) entries.
+                # all_members is used for the status summary; display_members for listing.
+                prepared_pools = []
+                for pool in pools:
+                    pool_id = resource_attr(pool, 'id')
 
-                        # Get members for this pool
-                        try:
-                            members = list(conn.load_balancer.members(pool=pool_id))
+                    try:
+                        all_members = [
+                            member_to_dict(m)
+                            for m in conn.load_balancer.members(pool=pool_id)
+                        ]
+                    except (OpenStackCloudException, Exception):
+                        if filter_mode and not collapse_mode:
+                            # Skip pools we cannot inspect in filter mode
+                            continue
+                        all_members = None
 
-                            # Filter members to only problematic ones
-                            problematic_members = []
-                            for member in members:
-                                # Handle both dict and object responses
-                                if hasattr(member, 'name'):
-                                    member_dict = {
-                                        'id': member.id,
-                                        'name': member.name,
-                                        'provisioning_status': getattr(member, 'provisioning_status', 'UNKNOWN'),
-                                        'operating_status': getattr(member, 'operating_status', 'UNKNOWN'),
-                                    }
-                                else:
-                                    member_dict = member
+                    if collapse_mode:
+                        display_members = None
+                    elif filter_mode:
+                        if all_members is None:
+                            continue
+                        problematic = [m for m in all_members if is_member_problematic(m)]
+                        if len(all_members) > 0 and len(problematic) == 0:
+                            continue
+                        display_members = problematic
+                    else:
+                        display_members = all_members
 
-                                if is_member_problematic(member_dict):
-                                    problematic_members.append(member_dict)
+                    prepared_pools.append((pool, all_members, display_members))
 
-                            # Show pool if it has no members OR has problematic members
-                            if len(members) == 0 or len(problematic_members) > 0:
-                                filtered_pools.append((pool, problematic_members))
-                        except (OpenStackCloudException, Exception):
-                            # If we can't fetch members, skip this pool in filter mode
-                            pass
+                if filter_mode and not collapse_mode and not prepared_pools:
+                    continue
 
-                    # Only show loadbalancer if it has filtered pools
-                    if not filtered_pools:
+                print(format_lb_line(lb_name, lb_id, lb_prov_status, lb_oper_status))
+
+                if not prepared_pools:
+                    print(f"  └─ {Colors.BLUE}No pools{Colors.RESET}")
+                    print()
+                    continue
+
+                for idx, (pool, all_members, display_members) in enumerate(prepared_pools):
+                    pool_name = resource_attr(pool, 'name', None) or resource_attr(pool, 'id')
+                    pool_id = resource_attr(pool, 'id')
+                    pool_prov_status = resource_attr(pool, 'provisioning_status')
+                    pool_oper_status = resource_attr(pool, 'operating_status')
+
+                    is_last_pool = (idx == len(prepared_pools) - 1)
+                    prefix = "  └─" if is_last_pool else "  ├─"
+                    member_prefix = "     " if is_last_pool else "  │  "
+
+                    print(
+                        format_pool_line(
+                            prefix,
+                            pool_name,
+                            pool_id,
+                            pool_prov_status,
+                            pool_oper_status,
+                            members=all_members,
+                        )
+                    )
+
+                    if collapse_mode:
                         continue
 
-                    pools = filtered_pools
-                else:
-                    # In normal mode, convert pools to list of tuples (pool, None)
-                    pools = [(pool, None) for pool in pools]
+                    if display_members is None:
+                        print(
+                            f"{member_prefix}└─ "
+                            f"{Colors.RED}Error fetching members{Colors.RESET}"
+                        )
+                        continue
 
-                if not pools:
-                    if not filter_mode:
-                        print(f"{Colors.BOLD}{Colors.BLUE}📦 {lb_name}{Colors.RESET} (ID: {lb_id})")
-                        print(f"  └─ {Colors.BLUE}No pools{Colors.RESET}")
-                        print()
-                else:
-                    print(f"{Colors.BOLD}{Colors.BLUE}📦 {lb_name}{Colors.RESET} (ID: {lb_id})")
+                    if len(display_members) == 0:
+                        print(f"{member_prefix}└─ {Colors.BLUE}No members{Colors.RESET}")
+                        continue
 
-                    for idx, (pool, prefiltered_members) in enumerate(pools):
-                        # Handle both dict and object responses
-                        if hasattr(pool, 'name'):
-                            pool_name = pool.name or pool.id
-                            pool_id = pool.id
-                            # Convert to dict for easier access
-                            pool_dict = {
-                                'id': pool.id,
-                                'name': pool.name,
-                            }
-                        else:
-                            pool_name = pool.get('name', pool.get('id', 'Unknown'))
-                            pool_id = pool.get('id')
-                            pool_dict = pool
-
-                        is_last_pool = (idx == len(pools) - 1)
-
-                        # Tree connector
+                    for mem_idx, member in enumerate(display_members):
+                        is_last_member = (mem_idx == len(display_members) - 1)
                         if is_last_pool:
-                            prefix = "  └─"
-                            member_prefix = "     "
+                            member_connector = "     └─" if is_last_member else "     ├─"
                         else:
-                            prefix = "  ├─"
-                            member_prefix = "  │  "
+                            member_connector = "  │  └─" if is_last_member else "  │  ├─"
 
-                        print(f"{prefix} {Colors.GREEN}🏊 {pool_name}{Colors.RESET} (ID: {pool_id})")
-
-                        # Get members for this pool (skip if collapse mode)
-                        if collapse_mode:
-                            # Skip member fetching and display in collapse mode
-                            pass
-                        else:
-                            try:
-                                if filter_mode:
-                                    # Use pre-filtered members (already filtered to problematic ones)
-                                    members = prefiltered_members
-
-                                    # In filter mode, show empty pools or problematic members
-                                    if len(members) == 0:
-                                        if is_last_pool:
-                                            print(f"     └─ {Colors.BLUE}No members{Colors.RESET}")
-                                        else:
-                                            print(f"  │  └─ {Colors.BLUE}No members{Colors.RESET}")
-                                    else:
-                                        # Members are already filtered to problematic ones
-                                        for mem_idx, member in enumerate(members):
-                                            is_last_member = (mem_idx == len(members) - 1)
-
-                                            if is_last_pool:
-                                                if is_last_member:
-                                                    member_connector = "     └─"
-                                                else:
-                                                    member_connector = "     ├─"
-                                            else:
-                                                if is_last_member:
-                                                    member_connector = "  │  └─"
-                                                else:
-                                                    member_connector = "  │  ├─"
-
-                                            member_str = format_member_status(member)
-                                            print(f"{member_connector} {Colors.BOLD}👤{Colors.RESET} {member_str}")
-                                else:
-                                    # Normal mode - fetch and show all members
-                                    members = list(conn.load_balancer.members(pool=pool_id))
-                                    # Normal mode - show all members
-                                    if not members:
-                                        if is_last_pool:
-                                            print(f"     └─ {Colors.BLUE}No members{Colors.RESET}")
-                                        else:
-                                            print(f"  │  └─ {Colors.BLUE}No members{Colors.RESET}")
-                                    else:
-                                        for mem_idx, member in enumerate(members):
-                                            # Handle both dict and object responses
-                                            if hasattr(member, 'name'):
-                                                member_dict = {
-                                                    'id': member.id,
-                                                    'name': member.name,
-                                                    'provisioning_status': getattr(member, 'provisioning_status', 'UNKNOWN'),
-                                                    'operating_status': getattr(member, 'operating_status', 'UNKNOWN'),
-                                                }
-                                            else:
-                                                member_dict = member
-
-                                            is_last_member = (mem_idx == len(members) - 1)
-
-                                            if is_last_pool:
-                                                if is_last_member:
-                                                    member_connector = "     └─"
-                                                else:
-                                                    member_connector = "     ├─"
-                                            else:
-                                                if is_last_member:
-                                                    member_connector = "  │  └─"
-                                                else:
-                                                    member_connector = "  │  ├─"
-
-                                            member_str = format_member_status(member_dict)
-                                            print(f"{member_connector} {Colors.BOLD}👤{Colors.RESET} {member_str}")
-
-                            except (OpenStackCloudException, Exception) as e:
-                                print(f"{member_prefix}└─ {Colors.RED}Error fetching members: {e}{Colors.RESET}")
+                        member_str = format_member_status(member)
+                        print(f"{member_connector} {Colors.BOLD}👤{Colors.RESET} {member_str}")
 
             except (OpenStackCloudException, Exception) as e:
                 if not filter_mode:
-                    print(f"{Colors.BOLD}{Colors.BLUE}📦 {lb_name}{Colors.RESET} (ID: {lb_id})")
+                    print(format_lb_line(lb_name, lb_id, lb_prov_status, lb_oper_status))
                     print(f"  └─ {Colors.RED}Error fetching pools: {e}{Colors.RESET}")
                     print()
+                continue
 
-            if not filter_mode or (filter_mode and pools):
-                print()  # Empty line between loadbalancers
+            print()  # Empty line between loadbalancers
 
     except (OpenStackCloudException, Exception) as e:
         print(f"{Colors.RED}Error: {e}{Colors.RESET}")
@@ -401,7 +405,7 @@ def main():
     parser.add_argument(
         '--collapse',
         action='store_true',
-        help='Collapse mode: only show pool names without querying or displaying members (faster)'
+        help='Collapse mode: show pools with member status summary, without listing individual members'
     )
 
     args = parser.parse_args()

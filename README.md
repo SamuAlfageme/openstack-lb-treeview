@@ -11,22 +11,20 @@ A Python script that displays a tree view of all loadbalancers in an OpenStack p
 - Displays loadbalancers as root nodes
 - Shows pools as children of loadbalancers
 - Shows members as children of pools
+- Shows `provisioning_status` and `operating_status` for load balancers, pools, and members
+- Shows a per-pool member operating-status summary (e.g. `13 ERROR - 3 ONLINE - 16 TOTAL`)
 - Highlights members with `provisioning_status != ACTIVE` (yellow/bold)
 - Displays members with `operating_status != ONLINE` in red
 - **Single LB**: Show the tree for one load balancer by name or ID (`--lb`)
 - **Filter mode**: Show only problematic members (not ACTIVE/ONLINE) and pools with no members
-- **Collapse mode**: Show only pool names without querying/displaying members (faster execution)
+- **Collapse mode**: Show pools with member status summary, without listing individual members
 
 ## Installation
 
 ### Install globally via pip
 
-Install directly from the source directory:
-```bash
-pip install /path/to/openstack-lb-treeview
-```
+Install directly from PyPi:
 
-Or if you've published to PyPI:
 ```bash
 pip install openstack-lb-treeview
 ```
@@ -70,7 +68,7 @@ openstack-lb-treeview --filter
 openstack-lb-treeview --lb my-loadbalancer --filter
 ```
 
-Collapse mode (only show pool names, skip member queries):
+Collapse mode (pool summary only, no individual members):
 ```bash
 openstack-lb-treeview --collapse
 ```
@@ -96,39 +94,39 @@ python openstack_lb_treeview/lb_treeview.py
 
 Normal mode:
 ```
-📦 my-loadbalancer (ID: abc123...)
-  ├─ 🏊 pool-1 (ID: def456...)
+📦 my-loadbalancer (ID: abc123...) (provisioning: ACTIVE | operating: ONLINE)
+  ├─ 🏊 pool-1 (ID: def456...) (provisioning: ACTIVE | operating: DEGRADED) | 1 OFFLINE - 1 ONLINE - 2 TOTAL
   │  ├─ 👤 member-1 (provisioning: ACTIVE | operating: ONLINE)
   │  └─ 👤 member-2 (provisioning: PENDING_CREATE | operating: OFFLINE)
-  └─ 🏊 pool-2 (ID: ghi789...)
+  └─ 🏊 pool-2 (ID: ghi789...) (provisioning: ACTIVE | operating: ONLINE) | 1 ONLINE - 1 TOTAL
      └─ 👤 member-3 (provisioning: ACTIVE | operating: ONLINE)
 ```
 
 Filter mode (`--filter`):
 ```
-📦 my-loadbalancer (ID: abc123...)
-  ├─ 🏊 pool-1 (ID: def456...)
+📦 my-loadbalancer (ID: abc123...) (provisioning: ACTIVE | operating: DEGRADED)
+  ├─ 🏊 pool-1 (ID: def456...) (provisioning: ACTIVE | operating: DEGRADED) | 1 OFFLINE - 1 ONLINE - 2 TOTAL
   │  └─ 👤 member-2 (provisioning: PENDING_CREATE | operating: OFFLINE)
-  └─ 🏊 pool-3 (ID: xyz789...)
+  └─ 🏊 pool-3 (ID: xyz789...) (provisioning: ACTIVE | operating: OFFLINE) | 0 TOTAL
      └─ No members
 ```
 
-In filter mode, only pools with problematic members (not ACTIVE or not ONLINE) or pools with no members are shown.
+In filter mode, only pools with problematic members (not ACTIVE or not ONLINE) or pools with no members are shown. The pool summary still counts all members.
 
 Collapse mode (`--collapse`):
 ```
-📦 my-loadbalancer (ID: abc123...)
-  ├─ 🏊 pool-1 (ID: def456...)
-  └─ 🏊 pool-2 (ID: ghi789...)
+📦 my-loadbalancer (ID: abc123...) (provisioning: ACTIVE | operating: ONLINE)
+  ├─ 🏊 pool-1 (ID: def456...) (provisioning: ACTIVE | operating: DEGRADED) | 1 OFFLINE - 1 ONLINE - 2 TOTAL
+  └─ 🏊 pool-2 (ID: ghi789...) (provisioning: ACTIVE | operating: ONLINE) | 1 ONLINE - 1 TOTAL
 ```
 
-In collapse mode, only pool names are displayed without querying or showing members. This is useful for quickly viewing the structure and is faster when you don't need member details.
+In collapse mode, pools are shown with status and member summary, but individual members are not listed.
 
 Combined filter and collapse mode (`--filter --collapse`):
 ```
-📦 my-loadbalancer (ID: abc123...)
-  ├─ 🏊 pool-1 (ID: def456...)
-  └─ 🏊 pool-2 (ID: ghi789...)
+📦 my-loadbalancer (ID: abc123...) (provisioning: ACTIVE | operating: DEGRADED)
+  ├─ 🏊 pool-1 (ID: def456...) (provisioning: ACTIVE | operating: DEGRADED) | 1 OFFLINE - 1 ONLINE - 2 TOTAL
+  └─ 🏊 pool-2 (ID: ghi789...) (provisioning: ACTIVE | operating: ONLINE) | 1 ONLINE - 1 TOTAL
 ```
 
 When both `--filter` and `--collapse` are used together, only load balancers with `operating_status != 'ONLINE'` are displayed. This is useful for quickly identifying load balancers that are not in an ONLINE state.
