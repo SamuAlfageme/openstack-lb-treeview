@@ -10,6 +10,7 @@ Displays a tree view of all loadbalancers in a project, showing:
 Highlights:
 - Members with provisioning_status != ACTIVE are highlighted
 - Members with operating_status != ONLINE are displayed in red
+- --count-members ranks those members by how many load balancers they appear in
 """
 
 import sys
@@ -136,6 +137,122 @@ def format_member_summary(members):
 
     parts.append(f"{Colors.BOLD}{total} TOTAL{Colors.RESET}")
     return " - ".join(parts)
+
+
+def member_name(member):
+    """Name used to group the same host across load balancers."""
+    return member.get('name') or member.get('id') or 'N/A'
+
+
+def record_bad_member(ranks, member, lb_id):
+    """Count a problematic member once per load balancer.
+
+    ranks maps member name to {"lbs", "operating", "provisioning"}.
+    """
+    if not is_member_problematic(member):
+        return
+
+    name = member_name(member)
+    entry = ranks.get(name)
+    if entry is None:
+        entry = {
+            'lbs': set(),
+            'operating': Counter(),
+            'provisioning': Counter(),
+        }
+        ranks[name] = entry
+
+    entry['lbs'].add(lb_id)
+    entry['operating'][member.get('operating_status') or 'UNKNOWN'] += 1
+    entry['provisioning'][member.get('provisioning_status') or 'UNKNOWN'] += 1
+
+
+def bad_status_labels(entry):
+    """Operating statuses that are not ONLINE, then non-ACTIVE provisioning."""
+    labels = []
+    operating = entry['operating']
+    for status in OPERATING_STATUS_ORDER:
+        if status != 'ONLINE' and operating.get(status):
+            labels.append(status)
+    for status in sorted(operating):
+        if status not in OPERATING_STATUS_ORDER and status != 'ONLINE':
+            labels.append(status)
+
+    provisioning = entry['provisioning']
+    for status in sorted(provisioning):
+        if status != 'ACTIVE' and provisioning[status]:
+            labels.append(status)
+    return ", ".join(labels)
+
+
+def format_member_counts(ranks):
+    """Lines ranking bad members by distinct load balancer count, highest first."""
+    if not ranks:
+        return ["No members with bad status found."]
+
+    ranked = sorted(
+        ranks.items(),
+        key=lambda item: (-len(item[1]['lbs']), item[0]),
+    )
+    width = max(len(str(len(entry['lbs']))) for _, entry in ranked)
+    lines = ["Members with bad status, ordered by load balancer count:", ""]
+    for name, entry in ranked:
+        count = len(entry['lbs'])
+        count_str = f"{count:>{width}}"
+        if count > 1:
+            count_str = f"{Colors.RED}{Colors.BOLD}{count_str}{Colors.RESET}"
+        labels = bad_status_labels(entry)
+        if labels:
+            lines.append(f"{count_str}  {name}  {labels}")
+        else:
+            lines.append(f"{count_str}  {name}")
+    return lines
+
+
+def print_member_counts(conn, project_id=None, lb_name_or_id=None):
+    """Rank member names that are not ACTIVE/ONLINE by load balancer count.
+
+    The same host registered on many load balancers is listed once, with the
+    number of load balancers where it has a bad status. Highest counts first.
+    """
+    try:
+        loadbalancers = resolve_loadbalancers(
+            conn, project_id=project_id, lb_name_or_id=lb_name_or_id
+        )
+
+        if not loadbalancers:
+            print("No loadbalancers found in the project.")
+            return
+
+        ranks = {}
+        for lb in loadbalancers:
+            lb_id = resource_attr(lb, 'id')
+            try:
+                pools = list(conn.load_balancer.pools(loadbalancer_id=lb_id))
+            except (OpenStackCloudException, Exception):
+                continue
+
+            for pool in pools:
+                pool_id = resource_attr(pool, 'id')
+                try:
+                    members = [
+                        member_to_dict(m)
+                        for m in conn.load_balancer.members(pool=pool_id)
+                    ]
+                except (OpenStackCloudException, Exception):
+                    continue
+
+                for member in members:
+                    record_bad_member(ranks, member, lb_id)
+
+        for line in format_member_counts(ranks):
+            print(line)
+
+    except (OpenStackCloudException, Exception) as e:
+        print(f"{Colors.RED}Error: {e}{Colors.RESET}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 def format_lb_line(lb_name, lb_id, prov_status, oper_status):
@@ -377,6 +494,7 @@ def main():
   openstack-lb-treeview --lb my-loadbalancer --collapse
   openstack-lb-treeview --project-id <project-id>
   openstack-lb-treeview --cloud mycloud --filter --collapse
+  openstack-lb-treeview --filter --count-members
 """
     )
     parser.add_argument(
@@ -407,6 +525,15 @@ def main():
         action='store_true',
         help='Collapse mode: show pools with member status summary, without listing individual members'
     )
+    parser.add_argument(
+        '--count-members',
+        action='store_true',
+        help=(
+            'Count members with bad status (not ACTIVE/ONLINE) and order them by '
+            'how many load balancers each name appears in. Replaces the tree view. '
+            'Use with --filter.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -419,6 +546,14 @@ def main():
     except Exception as e:
         print(f"Error connecting to OpenStack: {e}")
         sys.exit(1)
+
+    if args.count_members:
+        print_member_counts(
+            conn,
+            project_id=args.project_id,
+            lb_name_or_id=args.lb,
+        )
+        return
 
     # Print tree view
     print_tree(

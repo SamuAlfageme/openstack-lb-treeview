@@ -17,6 +17,7 @@ A Python script that displays a tree view of all loadbalancers in an OpenStack p
 - Displays members with `operating_status != ONLINE` in red
 - **Single LB**: Show the tree for one load balancer by name or ID (`--lb`)
 - **Filter mode**: Show only problematic members (not ACTIVE/ONLINE) and pools with no members
+- **Count members**: Rank those problematic members by how many load balancers each name appears in (`--count-members`)
 - **Collapse mode**: Show pools with member status summary, without listing individual members
 
 ## Installation
@@ -68,6 +69,11 @@ openstack-lb-treeview --filter
 openstack-lb-treeview --lb my-loadbalancer --filter
 ```
 
+Count members with a bad status, ordered by how many load balancers each name appears in (highest first). The member name is the host, so this works across environments without a hostname pattern:
+```bash
+openstack-lb-treeview --filter --count-members
+```
+
 Collapse mode (pool summary only, no individual members):
 ```bash
 openstack-lb-treeview --collapse
@@ -112,6 +118,17 @@ Filter mode (`--filter`):
 ```
 
 In filter mode, only pools with problematic members (not ACTIVE or not ONLINE) or pools with no members are shown. The pool summary still counts all members.
+
+Count members (`--filter --count-members`):
+```
+Members with bad status, ordered by load balancer count:
+
+  12  sck-production-scc-zhw-pool-ubuntu-1-aaa-bbb  ERROR
+   3  sck-production-scc-zhw-pool-ubuntu-2-ccc-ddd  OFFLINE, ERROR
+   1  sck-production-scc-zhw-pool-ubuntu-3-eee-fff  OFFLINE
+```
+
+Each line is one member name. The number is how many load balancers that host is in with a bad status (not ACTIVE or not ONLINE). Counts greater than 1 are highlighted. Names that show up on many load balancers are the usual candidates to replace.
 
 Collapse mode (`--collapse`):
 ```
