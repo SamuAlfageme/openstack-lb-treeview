@@ -11,6 +11,7 @@ Highlights:
 - Members with provisioning_status != ACTIVE are highlighted
 - Members with operating_status != ONLINE are displayed in red
 - --count-members ranks those members by how many load balancers they appear in
+- --combine sums every non-healthy membership and prints only the count and name
 """
 
 import sys
@@ -157,12 +158,14 @@ def record_bad_member(ranks, member, lb_id):
     if entry is None:
         entry = {
             'lbs': set(),
+            'memberships': 0,
             'operating': Counter(),
             'provisioning': Counter(),
         }
         ranks[name] = entry
 
     entry['lbs'].add(lb_id)
+    entry['memberships'] += 1
     entry['operating'][member.get('operating_status') or 'UNKNOWN'] += 1
     entry['provisioning'][member.get('provisioning_status') or 'UNKNOWN'] += 1
 
@@ -185,22 +188,39 @@ def bad_status_labels(entry):
     return ", ".join(labels)
 
 
-def format_member_counts(ranks):
-    """Lines ranking bad members by distinct load balancer count, highest first."""
+def member_rank_count(entry, combine=False):
+    """Distinct load balancers, or every non-healthy membership when combining."""
+    if combine:
+        return entry['memberships']
+    return len(entry['lbs'])
+
+
+def format_member_counts(ranks, combine=False):
+    """Lines ranking bad members, highest count first.
+
+    combine sums every non-healthy membership (ERROR, OFFLINE, NO_MONITOR, ...)
+    and prints only the count and member name.
+    """
     if not ranks:
         return ["No members with bad status found."]
 
     ranked = sorted(
         ranks.items(),
-        key=lambda item: (-len(item[1]['lbs']), item[0]),
+        key=lambda item: (-member_rank_count(item[1], combine), item[0]),
     )
-    width = max(len(str(len(entry['lbs']))) for _, entry in ranked)
-    lines = ["Members with bad status, ordered by load balancer count:", ""]
+    width = max(len(str(member_rank_count(entry, combine))) for _, entry in ranked)
+    if combine:
+        lines = ["Non-healthy members, ordered by count:", ""]
+    else:
+        lines = ["Members with bad status, ordered by load balancer count:", ""]
     for name, entry in ranked:
-        count = len(entry['lbs'])
+        count = member_rank_count(entry, combine)
         count_str = f"{count:>{width}}"
         if count > 1:
             count_str = f"{Colors.RED}{Colors.BOLD}{count_str}{Colors.RESET}"
+        if combine:
+            lines.append(f"{count_str}  {name}")
+            continue
         labels = bad_status_labels(entry)
         if labels:
             lines.append(f"{count_str}  {name}  {labels}")
@@ -209,7 +229,7 @@ def format_member_counts(ranks):
     return lines
 
 
-def print_member_counts(conn, project_id=None, lb_name_or_id=None):
+def print_member_counts(conn, project_id=None, lb_name_or_id=None, combine=False):
     """Rank member names that are not ACTIVE/ONLINE by load balancer count.
 
     The same host registered on many load balancers is listed once, with the
@@ -245,7 +265,7 @@ def print_member_counts(conn, project_id=None, lb_name_or_id=None):
                 for member in members:
                     record_bad_member(ranks, member, lb_id)
 
-        for line in format_member_counts(ranks):
+        for line in format_member_counts(ranks, combine=combine):
             print(line)
 
     except (OpenStackCloudException, Exception) as e:
@@ -495,6 +515,7 @@ def main():
   openstack-lb-treeview --project-id <project-id>
   openstack-lb-treeview --cloud mycloud --filter --collapse
   openstack-lb-treeview --filter --count-members
+  openstack-lb-treeview --filter --count-members --combine
 """
     )
     parser.add_argument(
@@ -534,6 +555,14 @@ def main():
             'Use with --filter.'
         ),
     )
+    parser.add_argument(
+        '--combine',
+        action='store_true',
+        help=(
+            'With --count-members: add up every non-healthy membership '
+            '(ERROR, NO_MONITOR, OFFLINE, ...) and show only the count and member name'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -547,11 +576,12 @@ def main():
         print(f"Error connecting to OpenStack: {e}")
         sys.exit(1)
 
-    if args.count_members:
+    if args.count_members or args.combine:
         print_member_counts(
             conn,
             project_id=args.project_id,
             lb_name_or_id=args.lb,
+            combine=args.combine,
         )
         return
 

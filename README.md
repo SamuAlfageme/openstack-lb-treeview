@@ -18,6 +18,7 @@ A Python script that displays a tree view of all loadbalancers in an OpenStack p
 - **Single LB**: Show the tree for one load balancer by name or ID (`--lb`)
 - **Filter mode**: Show only problematic members (not ACTIVE/ONLINE) and pools with no members
 - **Count members**: Rank those problematic members by how many load balancers each name appears in (`--count-members`)
+- **Combine**: Sum every non-healthy membership for a name and show only the count and member name (`--combine`)
 - **Collapse mode**: Show pools with member status summary, without listing individual members
 
 ## Installation
@@ -72,6 +73,11 @@ openstack-lb-treeview --lb my-loadbalancer --filter
 Count members with a bad status, ordered by how many load balancers each name appears in (highest first). The member name is the host, so this works across environments without a hostname pattern:
 ```bash
 openstack-lb-treeview --filter --count-members
+```
+
+Add those non-healthy memberships together, whatever the status (`ERROR`, `NO_MONITOR`, `OFFLINE`, ...), and print only the count and member name:
+```bash
+openstack-lb-treeview --filter --count-members --combine
 ```
 
 Collapse mode (pool summary only, no individual members):
@@ -129,6 +135,17 @@ Members with bad status, ordered by load balancer count:
 ```
 
 Each line is one member name. The number is how many load balancers that host is in with a bad status (not ACTIVE or not ONLINE). Counts greater than 1 are highlighted. Names that show up on many load balancers are the usual candidates to replace.
+
+Combine (`--filter --count-members --combine`):
+```
+Non-healthy members, ordered by count:
+
+  15  sck-production-scc-zhw-pool-ubuntu-1-aaa-bbb
+   3  sck-production-scc-zhw-pool-ubuntu-2-ccc-ddd
+   1  sck-production-scc-zhw-pool-ubuntu-3-eee-fff
+```
+
+`--combine` sums every non-healthy membership for that name, whether the status is `ERROR`, `NO_MONITOR`, `OFFLINE`, or anything else that is not ACTIVE/ONLINE. Each line is only the count and the member name.
 
 Collapse mode (`--collapse`):
 ```
